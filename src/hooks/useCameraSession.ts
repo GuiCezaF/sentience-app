@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState } from "react";
 
 const CAPTURE_INTERVAL_MS = 5000;
-const JPEG_MAX_EDGE = 160;
+const JPEG_MAX_EDGE = 320;
 
 // A Sessão de câmera vive com o processo; não para no unmount do React (hide / StrictMode).
 let sessionStream: MediaStream | null = null;

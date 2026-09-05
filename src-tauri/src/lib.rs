@@ -1,10 +1,13 @@
+mod adapters;
 mod agent;
 
-use agent::{LiveAgent, TraySnapshot};
+use adapters::LiveAgent;
+use agent::{AgentInitError, DEFAULT_SUBJECT_ID, ModelPaths, TraySnapshot};
 use std::sync::Mutex;
 use std::time::SystemTime;
 use tauri::{
     menu::{Menu, MenuItem},
+    path::BaseDirectory,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     LogicalPosition, Manager, State, WebviewWindow,
 };
@@ -35,7 +38,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(Mutex::new(LiveAgent::new()))
         .invoke_handler(tauri::generate_handler![
             logout,
             ingest_frame,
@@ -43,6 +45,9 @@ pub fn run() {
             snapshot
         ])
         .setup(|app| {
+            let agent = bootstrap_live_agent(app)?;
+            app.manage(Mutex::new(agent));
+
             let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
 
@@ -93,6 +98,38 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn bootstrap_live_agent(app: &tauri::App) -> Result<LiveAgent, AgentInitError> {
+    let resolver = app.path();
+    let ultraface = resolver
+        .resolve("model/version-RFB-320.onnx", BaseDirectory::Resource)
+        .map_err(|e| {
+            AgentInitError::new(format!(
+                "Falha ao resolver model/version-RFB-320.onnx nos recursos do app: {e}"
+            ))
+        })?;
+    let emotion = resolver
+        .resolve("model/emotion_model.onnx", BaseDirectory::Resource)
+        .map_err(|e| {
+            AgentInitError::new(format!(
+                "Falha ao resolver model/emotion_model.onnx nos recursos do app: {e}"
+            ))
+        })?;
+    let app_data = resolver.app_data_dir().map_err(|e| {
+        AgentInitError::new(format!("Falha ao resolver o diretório de dados do app: {e}"))
+    })?;
+    std::fs::create_dir_all(&app_data).map_err(|e| {
+        AgentInitError::new(format!("Falha ao criar o diretório de dados do app: {e}"))
+    })?;
+    let queue_path = app_data.join("queue.sqlite");
+    let subject_id =
+        std::env::var("SENTIENCE_SUBJECT_ID").unwrap_or_else(|_| DEFAULT_SUBJECT_ID.to_string());
+    LiveAgent::make(
+        ModelPaths { ultraface, emotion },
+        queue_path,
+        subject_id,
+    )
 }
 
 fn show_tray_window(window: &WebviewWindow) -> tauri::Result<()> {

@@ -29,3 +29,12 @@ Clique no ícone da bandeja para abrir a janela.
 ```bash
 bun run tauri build
 ```
+
+## Modelos
+
+Os pesos ONNX ficam em `src-tauri/model/` (já no `.gitignore`; não versionar):
+
+- `emotion_model.onnx` — classificador de emoção (DS-CNN)
+- `version-RFB-320.onnx` — detector de face UltraFace
+
+A variável de ambiente `SENTIENCE_SUBJECT_ID` identifica o sujeito nas classificações persistidas. Sem ela, o app usa um id padrão.
