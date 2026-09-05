@@ -13,15 +13,15 @@ async function logout(): Promise<void> {
 
 export default function Footer() {
   return (
-    <footer className="flex flex-col items-start text-lg gap-2">
-      <div className="flex gap-2 items-center justify-center">
-        <FaCheck size={14} />
+    <footer className="flex flex-col items-start text-xs gap-1 text-app-text/70">
+      <div className="flex gap-1.5 items-center">
+        <FaCheck size={11} />
         <button onClick={() => logout()} className="cursor-pointer">
           Sair da conta
         </button>
       </div>
-      <div className="flex gap-2 items-center justify-center text-app-err">
-        <MdClose size={18} />
+      <div className="flex gap-1.5 items-center text-app-err">
+        <MdClose size={14} />
         <button onClick={() => closeApp()} className="cursor-pointer">
           Fechar app
         </button>

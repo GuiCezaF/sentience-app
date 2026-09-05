@@ -1,7 +1,12 @@
+mod agent;
+
+use agent::{LiveAgent, TraySnapshot};
+use std::sync::Mutex;
+use std::time::SystemTime;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    LogicalPosition, Manager, WebviewWindow,
+    LogicalPosition, Manager, State, WebviewWindow,
 };
 
 #[tauri::command]
@@ -9,12 +14,34 @@ fn logout() -> String {
     return "Logout".to_string();
 }
 
+#[tauri::command]
+fn ingest_frame(bytes: Vec<u8>, agent: State<Mutex<LiveAgent>>) {
+    let mut agent = agent.lock().expect("Agente");
+    agent.ingest_frame(&bytes, SystemTime::now());
+}
+
+#[tauri::command]
+fn set_camera_ok(ok: bool, agent: State<Mutex<LiveAgent>>) {
+    agent.lock().expect("Agente").set_camera_ok(ok);
+}
+
+#[tauri::command]
+fn snapshot(agent: State<Mutex<LiveAgent>>) -> TraySnapshot {
+    agent.lock().expect("Agente").snapshot()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![logout])
+        .manage(Mutex::new(LiveAgent::new()))
+        .invoke_handler(tauri::generate_handler![
+            logout,
+            ingest_frame,
+            set_camera_ok,
+            snapshot
+        ])
         .setup(|app| {
             let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
