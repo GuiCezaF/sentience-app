@@ -1,10 +1,10 @@
-import appLogo from "../assets/logo.svg";
 import type { TrayStatus } from "../types/agent";
+import StatusPill from "./StatusPill";
 
-const STATUS_CLASS: Record<TrayStatus, string> = {
-  Ativo: "text-app-success",
-  "Sem recorte": "text-app-text/55",
-  Falha: "text-app-err",
+const STATUS_HINT: Record<TrayStatus, string> = {
+  Ativo: "Classificando expressões",
+  "Sem recorte": "Nenhum rosto no recorte",
+  Falha: "Câmera ou modelo indisponível",
 };
 
 type NavbarProps = {
@@ -14,12 +14,12 @@ type NavbarProps = {
 
 export default function Navbar({ subjectName, status }: NavbarProps) {
   return (
-    <nav className="flex items-center justify-between w-full text-sm">
-      <div className="flex items-center gap-1.5">
-        <img src={appLogo} className="w-18 h-9" alt="sentience logo" />
-        <h1 className="text-sm font-semibold">{subjectName}</h1>
+    <header className="header">
+      <div className="min-w-0">
+        <h1 className="header-title">{subjectName}</h1>
+        <p className="header-subtitle">{STATUS_HINT[status]}</p>
       </div>
-      <div className={STATUS_CLASS[status]}>{status}</div>
-    </nav>
+      <StatusPill status={status} />
+    </header>
   );
 }

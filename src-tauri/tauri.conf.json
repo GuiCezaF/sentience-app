@@ -13,15 +13,17 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "sentience-app",
+        "title": "Sentience",
         "label": "main",
         "visible": false,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "resizable": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "width": 320,
-        "height": 360,
+        "width": 344,
+        "height": 452,
         "center": false
       }
     ],

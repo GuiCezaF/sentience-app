@@ -3,8 +3,11 @@ mod agent;
 
 use adapters::{HttpGateway, LiveAgent, LiveGateway};
 use agent::{AgentInitError, DEFAULT_SUBJECT_ID, ModelPaths, StubGateway, TraySnapshot};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
+
+static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
 use tauri::{
     menu::{Menu, MenuItem},
     path::BaseDirectory,
@@ -33,6 +36,12 @@ fn snapshot(agent: State<Mutex<LiveAgent>>) -> TraySnapshot {
     agent.lock().expect("Agente").snapshot()
 }
 
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    ALLOW_EXIT.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -42,7 +51,8 @@ pub fn run() {
             logout,
             ingest_frame,
             set_camera_ok,
-            snapshot
+            snapshot,
+            quit_app
         ])
         .setup(|app| {
             let agent = bootstrap_live_agent(app)?;
@@ -78,6 +88,7 @@ pub fn run() {
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     if event.id().as_ref() == "quit" {
+                        ALLOW_EXIT.store(true, Ordering::SeqCst);
                         app.exit(0);
                     }
                 })
@@ -113,8 +124,15 @@ pub fn run() {
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if !ALLOW_EXIT.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 fn bootstrap_live_agent(app: &tauri::App) -> Result<LiveAgent, AgentInitError> {
@@ -180,8 +198,8 @@ fn show_tray_window(window: &WebviewWindow) -> tauri::Result<()> {
     let screen_width = monitor_size.width as f64 / scale;
     let screen_height = monitor_size.height as f64 / scale;
 
-    let margin_right = 10.0;
-    let margin_bottom = 40.0;
+    let margin_right = 0.0;
+    let margin_bottom = 14.0;
 
     let x = screen_width - width - margin_right;
     let y = screen_height - height - margin_bottom;
