@@ -13,6 +13,7 @@ impl SqliteQueue {
         Self::from_connection(conn)
     }
 
+    #[cfg(test)]
     pub fn in_memory() -> Result<Self, PortError> {
         let conn = Connection::open_in_memory().map_err(port_err)?;
         Self::from_connection(conn)
@@ -30,6 +31,19 @@ impl SqliteQueue {
         )
         .map_err(port_err)?;
         Ok(Self { conn })
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> Result<usize, PortError> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_classifications",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(port_err)?;
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 }
 
@@ -49,18 +63,6 @@ impl Queue for SqliteQueue {
             )
             .map_err(port_err)?;
         Ok(())
-    }
-
-    fn len(&self) -> Result<usize, PortError> {
-        let count: i64 = self
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM pending_classifications",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(port_err)?;
-        Ok(usize::try_from(count).unwrap_or(0))
     }
 }
 

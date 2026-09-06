@@ -13,7 +13,7 @@ impl TractEmotionModel {
             .map_err(tract_err)?
             .with_input_fact(
                 0,
-                u8::fact(&[1, CROP_SIDE as usize, CROP_SIDE as usize, 1]).into(),
+                u8::fact([1, CROP_SIDE as i64, CROP_SIDE as i64, 1]).into(),
             )
             .map_err(tract_err)?
             .into_optimized()

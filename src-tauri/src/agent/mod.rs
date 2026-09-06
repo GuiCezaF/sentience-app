@@ -1,11 +1,6 @@
 mod ports;
 
-pub use ports::{
-    Clock, EmotionModel, FaceFinder, Gateway, Queue, StubGateway, SystemClock,
-};
-
-#[allow(unused_imports)]
-pub use ports::PortError;
+pub use ports::{EmotionModel, FaceFinder, Gateway, PortError, Queue, StubGateway};
 
 use image::{ImageFormat, RgbImage};
 use serde::Serialize;
@@ -16,7 +11,7 @@ use std::time::SystemTime;
 use uuid::Uuid;
 
 #[cfg(test)]
-pub use ports::{FakeClock, FakeEmotionModel, FakeFaceFinder, FakeQueue};
+pub use ports::{FakeEmotionModel, FakeFaceFinder, FakeQueue};
 
 pub const CONFIDENCE_FLOOR: f32 = 0.45;
 
@@ -74,7 +69,7 @@ pub struct Classification {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameError {
     InvalidJpeg,
-    #[allow(dead_code)]
+    #[cfg(test)]
     InvalidRgb,
 }
 
@@ -91,7 +86,7 @@ impl Frame {
         Ok(Self { image })
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_rgb(width: u32, height: u32, pixels: &[u8]) -> Result<Self, FrameError> {
         let expected = (width as usize)
             .checked_mul(height as usize)
@@ -200,7 +195,7 @@ pub enum AgentFault {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[cfg(test)]
 pub enum Health {
     Ok,
     Camera,
@@ -219,10 +214,6 @@ pub enum TrayStatus {
 #[serde(rename_all = "lowercase")]
 pub enum SyncLine {
     Pendente,
-    #[allow(dead_code)]
-    Ok,
-    #[allow(dead_code)]
-    Erro,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -258,23 +249,19 @@ impl fmt::Display for AgentInitError {
 
 impl std::error::Error for AgentInitError {}
 
-pub struct Agent<C, F, M, Q, G> {
-    #[allow(dead_code)]
-    clock: C,
+pub struct Agent<F, M, Q, G> {
     face_finder: F,
     emotion_model: M,
     queue: Q,
-    #[allow(dead_code)]
-    gateway: G,
+    _gateway: G,
     subject_id: String,
     camera_ok: bool,
     last_emotion: Option<Emotion>,
     fault: Option<AgentFault>,
 }
 
-impl<C, F, M, Q, G> Agent<C, F, M, Q, G> {
+impl<F, M, Q, G> Agent<F, M, Q, G> {
     pub fn with_ports(
-        clock: C,
         face_finder: F,
         emotion_model: M,
         queue: Q,
@@ -282,11 +269,10 @@ impl<C, F, M, Q, G> Agent<C, F, M, Q, G> {
         subject_id: impl Into<String>,
     ) -> Self {
         Self {
-            clock,
             face_finder,
             emotion_model,
             queue,
-            gateway,
+            _gateway: gateway,
             subject_id: subject_id.into(),
             camera_ok: true,
             last_emotion: None,
@@ -324,7 +310,7 @@ impl<C, F, M, Q, G> Agent<C, F, M, Q, G> {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn health(&self) -> Health {
         if !self.camera_ok {
             Health::Camera
@@ -336,9 +322,8 @@ impl<C, F, M, Q, G> Agent<C, F, M, Q, G> {
     }
 }
 
-impl<C, F, M, Q, G> Agent<C, F, M, Q, G>
+impl<F, M, Q, G> Agent<F, M, Q, G>
 where
-    C: Clock,
     F: FaceFinder,
     M: EmotionModel,
     Q: Queue,
@@ -406,11 +391,6 @@ where
         }
     }
 
-    #[allow(dead_code)]
-    pub fn pending_count(&self) -> usize {
-        self.queue.len().unwrap_or(0)
-    }
-
     fn mark_gap(&mut self) {
         self.last_emotion = None;
     }
@@ -447,22 +427,14 @@ mod tests {
     const HAPPY_ALTO: [f32; 4] = [0.05, 0.80, 0.10, 0.05];
     const ARGMAX_BAIXO: [f32; 4] = [0.31, 0.30, 0.20, 0.19];
 
-    type AgenteFake =
-        Agent<FakeClock, FakeFaceFinder, FakeEmotionModel, FakeQueue, StubGateway>;
+    type AgenteFake = Agent<FakeFaceFinder, FakeEmotionModel, FakeQueue, StubGateway>;
 
     fn agente_com(
         finder: FakeFaceFinder,
         model: FakeEmotionModel,
         queue: FakeQueue,
     ) -> AgenteFake {
-        Agent::with_ports(
-            FakeClock::at_unix_epoch(),
-            finder,
-            model,
-            queue,
-            StubGateway,
-            SUJEITO,
-        )
+        Agent::with_ports(finder, model, queue, StubGateway, SUJEITO)
     }
 
     fn frame_cinza(width: u32, height: u32) -> Frame {
@@ -697,6 +669,6 @@ mod tests {
 
         agent.set_camera_ok(true);
         assert_eq!(agent.snapshot().status, TrayStatus::SemRecorte);
-        assert_eq!(agent.pending_count(), 0);
+        assert_eq!(agent.test_queue().items.len(), 0);
     }
 }

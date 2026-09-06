@@ -6,12 +6,10 @@ pub use sqlite_queue::SqliteQueue;
 pub use tract_emotion::TractEmotionModel;
 pub use ultraface::UltraFaceFinder;
 
-use crate::agent::{
-    Agent, AgentInitError, ModelPaths, StubGateway, SystemClock,
-};
+use crate::agent::{Agent, AgentInitError, ModelPaths, StubGateway};
 use std::path::Path;
 
-pub type LiveAgent = Agent<SystemClock, UltraFaceFinder, TractEmotionModel, SqliteQueue, StubGateway>;
+pub type LiveAgent = Agent<UltraFaceFinder, TractEmotionModel, SqliteQueue, StubGateway>;
 
 impl LiveAgent {
     pub fn make(
@@ -38,7 +36,6 @@ impl LiveAgent {
             ))
         })?;
         Ok(Self::with_ports(
-            SystemClock,
             face_finder,
             emotion_model,
             queue,

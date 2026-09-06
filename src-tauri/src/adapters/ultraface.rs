@@ -19,7 +19,7 @@ impl UltraFaceFinder {
         let model = tract_onnx::onnx()
             .model_for_path(path.as_ref())
             .map_err(tract_err)?
-            .with_input_fact(0, f32::fact(&[1, 3, INPUT_HEIGHT as usize, INPUT_WIDTH as usize]).into())
+            .with_input_fact(0, f32::fact([1, 3, INPUT_HEIGHT as i64, INPUT_WIDTH as i64]).into())
             .map_err(tract_err)?
             .into_optimized()
             .map_err(tract_err)?

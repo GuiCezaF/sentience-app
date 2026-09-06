@@ -14,7 +14,7 @@ use tauri::{
 
 #[tauri::command]
 fn logout() -> String {
-    return "Logout".to_string();
+    "Logout".to_string()
 }
 
 #[tauri::command]

@@ -1,5 +1,4 @@
 use super::{Classification, FaceBox, FaceCrop, Frame};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortError(pub String);
@@ -18,87 +17,16 @@ impl std::fmt::Display for PortError {
 
 impl std::error::Error for PortError {}
 
-pub trait Clock {
-    #[allow(dead_code)]
-    fn now(&self) -> SystemTime;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> SystemTime {
-        SystemTime::now()
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy)]
-pub struct FakeClock {
-    now: SystemTime,
-}
-
-#[cfg(test)]
-impl FakeClock {
-    pub fn new(now: SystemTime) -> Self {
-        Self { now }
-    }
-
-    pub fn at_unix_epoch() -> Self {
-        Self::new(SystemTime::UNIX_EPOCH)
-    }
-}
-
-#[cfg(test)]
-impl Clock for FakeClock {
-    fn now(&self) -> SystemTime {
-        self.now
-    }
-}
-
 pub trait FaceFinder {
     fn detect(&self, frame: &Frame) -> Result<Vec<FaceBox>, PortError>;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NullFaceFinder;
-
-impl FaceFinder for NullFaceFinder {
-    fn detect(&self, _frame: &Frame) -> Result<Vec<FaceBox>, PortError> {
-        Ok(Vec::new())
-    }
 }
 
 pub trait EmotionModel {
     fn classify(&self, crop: &FaceCrop) -> Result<[f32; 4], PortError>;
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct StubEmotionModel;
-
-impl EmotionModel for StubEmotionModel {
-    fn classify(&self, _crop: &FaceCrop) -> Result<[f32; 4], PortError> {
-        Ok([0.0; 4])
-    }
-}
-
 pub trait Queue {
     fn push(&mut self, classification: &Classification) -> Result<(), PortError>;
-    #[allow(dead_code)]
-    fn len(&self) -> Result<usize, PortError>;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct StubQueue;
-
-impl Queue for StubQueue {
-    fn push(&mut self, _classification: &Classification) -> Result<(), PortError> {
-        Ok(())
-    }
-
-    fn len(&self) -> Result<usize, PortError> {
-        Ok(0)
-    }
 }
 
 pub trait Gateway {}
@@ -124,12 +52,6 @@ impl FakeFaceFinder {
 
     pub fn empty() -> Self {
         Self::boxes(Vec::new())
-    }
-
-    pub fn fail() -> Self {
-        Self {
-            result: Err(PortError::new("detect")),
-        }
     }
 }
 
@@ -213,9 +135,5 @@ impl Queue for FakeQueue {
         }
         self.items.push(classification.clone());
         Ok(())
-    }
-
-    fn len(&self) -> Result<usize, PortError> {
-        Ok(self.items.len())
     }
 }

@@ -1,5 +1,6 @@
 import "./App.css";
 import CameraFeed from "./components/CameraFeed";
+import EmotionDebug from "./components/EmotionDebug";
 import Footer from "./components/Footer";
 import Navbar from "./components/Navbar";
 import { useAgentSnapshot } from "./hooks/useAgentSnapshot";
@@ -17,9 +18,7 @@ export default function App() {
 
       <main className="flex-1 flex flex-col justify-center gap-2">
         <CameraFeed stream={stream} visible={cardVisible} cameraOk={cameraOk} />
-        {snapshot.emotion_pt != null && (
-          <span className="text-xs text-app-text/50">{snapshot.emotion_pt}</span>
-        )}
+        <EmotionDebug emotionPt={snapshot.emotion_pt} />
         <span className="text-xs text-app-text/50">Sincronização {snapshot.sync}</span>
       </main>
 
