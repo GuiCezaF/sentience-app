@@ -26,5 +26,7 @@ tauri-plugin-positioner = "2.3.2"
 tauri-plugin-process = "2"
 tract-onnx = "0.23"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+ureq = { version = "3", features = ["json"] }
+time = { version = "0.3", features = ["formatting"] }

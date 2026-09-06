@@ -1,4 +1,5 @@
-use super::{Classification, FaceBox, FaceCrop, Frame};
+use super::{Classification, FaceBox, FaceCrop, Frame, SyncEnvelope};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortError(pub String);
@@ -27,14 +28,44 @@ pub trait EmotionModel {
 
 pub trait Queue {
     fn push(&mut self, classification: &Classification) -> Result<(), PortError>;
+    fn pending(&self) -> Result<Vec<Classification>, PortError>;
+    fn remove(&mut self, ids: &[Uuid]) -> Result<(), PortError>;
 }
 
-pub trait Gateway {}
+pub trait Gateway {
+    fn send(&self, envelope: &SyncEnvelope) -> Result<(), PortError>;
+}
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct StubGateway;
+#[derive(Debug, Clone, Copy)]
+pub struct StubGateway {
+    fail: bool,
+}
 
-impl Gateway for StubGateway {}
+impl StubGateway {
+    pub fn ok() -> Self {
+        Self { fail: false }
+    }
+
+    pub fn failing() -> Self {
+        Self { fail: true }
+    }
+}
+
+impl Default for StubGateway {
+    fn default() -> Self {
+        Self::ok()
+    }
+}
+
+impl Gateway for StubGateway {
+    fn send(&self, _envelope: &SyncEnvelope) -> Result<(), PortError> {
+        if self.fail {
+            Err(PortError::new("stub 500"))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
@@ -111,6 +142,8 @@ impl EmotionModel for FakeEmotionModel {
 pub struct FakeQueue {
     pub items: Vec<Classification>,
     push_error: Option<PortError>,
+    remove_error: Option<PortError>,
+    inject_before_remove: Option<Classification>,
 }
 
 #[cfg(test)]
@@ -123,7 +156,22 @@ impl FakeQueue {
         Self {
             items: Vec::new(),
             push_error: Some(PortError::new("push")),
+            remove_error: None,
+            inject_before_remove: None,
         }
+    }
+
+    pub fn fail_on_remove() -> Self {
+        Self {
+            items: Vec::new(),
+            push_error: None,
+            remove_error: Some(PortError::new("remove")),
+            inject_before_remove: None,
+        }
+    }
+
+    pub fn inject_before_remove(&mut self, item: Classification) {
+        self.inject_before_remove = Some(item);
     }
 }
 
@@ -135,5 +183,64 @@ impl Queue for FakeQueue {
         }
         self.items.push(classification.clone());
         Ok(())
+    }
+
+    fn pending(&self) -> Result<Vec<Classification>, PortError> {
+        Ok(self.items.clone())
+    }
+
+    fn remove(&mut self, ids: &[Uuid]) -> Result<(), PortError> {
+        if let Some(error) = &self.remove_error {
+            return Err(error.clone());
+        }
+        if let Some(extra) = self.inject_before_remove.take() {
+            self.items.push(extra);
+        }
+        self.items.retain(|item| !ids.contains(&item.classification_id));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub struct FakeGateway {
+    fail: std::cell::Cell<bool>,
+    sent: std::cell::RefCell<Vec<SyncEnvelope>>,
+}
+
+#[cfg(test)]
+impl FakeGateway {
+    pub fn ok() -> Self {
+        Self {
+            fail: std::cell::Cell::new(false),
+            sent: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn failing() -> Self {
+        Self {
+            fail: std::cell::Cell::new(true),
+            sent: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn set_fail(&self, fail: bool) {
+        self.fail.set(fail);
+    }
+
+    pub fn sent(&self) -> Vec<SyncEnvelope> {
+        self.sent.borrow().clone()
+    }
+}
+
+#[cfg(test)]
+impl Gateway for FakeGateway {
+    fn send(&self, envelope: &SyncEnvelope) -> Result<(), PortError> {
+        self.sent.borrow_mut().push(envelope.clone());
+        if self.fail.get() {
+            Err(PortError::new("5xx"))
+        } else {
+            Ok(())
+        }
     }
 }

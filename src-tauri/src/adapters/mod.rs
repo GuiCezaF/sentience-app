@@ -1,21 +1,38 @@
+mod http_gateway;
 mod sqlite_queue;
 mod tract_emotion;
 mod ultraface;
 
+pub use http_gateway::HttpGateway;
 pub use sqlite_queue::SqliteQueue;
 pub use tract_emotion::TractEmotionModel;
 pub use ultraface::UltraFaceFinder;
 
-use crate::agent::{Agent, AgentInitError, ModelPaths, StubGateway};
+use crate::agent::{Agent, AgentInitError, Gateway, ModelPaths, PortError, StubGateway, SyncEnvelope};
 use std::path::Path;
 
-pub type LiveAgent = Agent<UltraFaceFinder, TractEmotionModel, SqliteQueue, StubGateway>;
+pub enum LiveGateway {
+    Http(HttpGateway),
+    Stub(StubGateway),
+}
+
+impl Gateway for LiveGateway {
+    fn send(&self, envelope: &SyncEnvelope) -> Result<(), PortError> {
+        match self {
+            Self::Http(gateway) => gateway.send(envelope),
+            Self::Stub(gateway) => gateway.send(envelope),
+        }
+    }
+}
+
+pub type LiveAgent = Agent<UltraFaceFinder, TractEmotionModel, SqliteQueue, LiveGateway>;
 
 impl LiveAgent {
     pub fn make(
         paths: ModelPaths,
         queue_path: impl AsRef<Path>,
         subject_id: impl Into<String>,
+        gateway: LiveGateway,
     ) -> Result<Self, AgentInitError> {
         let face_finder = UltraFaceFinder::load(&paths.ultraface).map_err(|e| {
             AgentInitError::new(format!(
@@ -39,7 +56,7 @@ impl LiveAgent {
             face_finder,
             emotion_model,
             queue,
-            StubGateway,
+            gateway,
             subject_id,
         ))
     }

@@ -1,10 +1,10 @@
 mod adapters;
 mod agent;
 
-use adapters::LiveAgent;
-use agent::{AgentInitError, DEFAULT_SUBJECT_ID, ModelPaths, TraySnapshot};
+use adapters::{HttpGateway, LiveAgent, LiveGateway};
+use agent::{AgentInitError, DEFAULT_SUBJECT_ID, ModelPaths, StubGateway, TraySnapshot};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tauri::{
     menu::{Menu, MenuItem},
     path::BaseDirectory,
@@ -47,6 +47,23 @@ pub fn run() {
         .setup(|app| {
             let agent = bootstrap_live_agent(app)?;
             app.manage(Mutex::new(agent));
+
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                handle
+                    .state::<Mutex<LiveAgent>>()
+                    .lock()
+                    .expect("Agente")
+                    .sync_tick(SystemTime::now());
+                loop {
+                    std::thread::sleep(Duration::from_secs(60));
+                    handle
+                        .state::<Mutex<LiveAgent>>()
+                        .lock()
+                        .expect("Agente")
+                        .sync_tick(SystemTime::now());
+                }
+            });
 
             let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
@@ -129,7 +146,22 @@ fn bootstrap_live_agent(app: &tauri::App) -> Result<LiveAgent, AgentInitError> {
         ModelPaths { ultraface, emotion },
         queue_path,
         subject_id,
+        live_gateway_from_env(),
     )
+}
+
+fn live_gateway_from_env() -> LiveGateway {
+    match std::env::var("SENTIENCE_SYNC_URL") {
+        Ok(url) if !url.trim().is_empty() => LiveGateway::Http(HttpGateway::new(url)),
+        _ => {
+            let stub = if std::env::var("SENTIENCE_SYNC_FAIL").as_deref() == Ok("1") {
+                StubGateway::failing()
+            } else {
+                StubGateway::ok()
+            };
+            LiveGateway::Stub(stub)
+        }
+    }
 }
 
 fn show_tray_window(window: &WebviewWindow) -> tauri::Result<()> {

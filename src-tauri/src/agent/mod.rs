@@ -7,11 +7,11 @@ use serde::Serialize;
 use std::cmp::Ordering;
 use std::fmt;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 #[cfg(test)]
-pub use ports::{FakeEmotionModel, FakeFaceFinder, FakeQueue};
+pub use ports::{FakeEmotionModel, FakeFaceFinder, FakeGateway, FakeQueue};
 
 pub const CONFIDENCE_FLOOR: f32 = 0.45;
 
@@ -19,6 +19,8 @@ pub const CROP_SIDE: u32 = 48;
 pub const CROP_PIXELS: usize = (CROP_SIDE as usize) * (CROP_SIDE as usize);
 
 pub const DEFAULT_SUBJECT_ID: &str = "local";
+
+pub const SYNC_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Emotion {
@@ -54,6 +56,16 @@ impl Emotion {
             Self::Happy => "Feliz",
             Self::Neutral => "Neutro",
             Self::Sad => "Triste",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "angry" => Some(Self::Angry),
+            "happy" => Some(Self::Happy),
+            "neutral" => Some(Self::Neutral),
+            "sad" => Some(Self::Sad),
+            _ => None,
         }
     }
 }
@@ -194,12 +206,27 @@ pub enum AgentFault {
     Storage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Health {
     Ok,
     Camera,
     Model,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncItem {
+    pub classification_id: Uuid,
+    pub occurred_at: String,
+    pub emotion: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncEnvelope {
+    pub subject_id: String,
+    pub sent_at: String,
+    pub health: Health,
+    pub items: Vec<SyncItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -214,6 +241,8 @@ pub enum TrayStatus {
 #[serde(rename_all = "lowercase")]
 pub enum SyncLine {
     Pendente,
+    Ok,
+    Erro,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -253,11 +282,13 @@ pub struct Agent<F, M, Q, G> {
     face_finder: F,
     emotion_model: M,
     queue: Q,
-    _gateway: G,
+    gateway: G,
     subject_id: String,
     camera_ok: bool,
     last_emotion: Option<Emotion>,
     fault: Option<AgentFault>,
+    next_sync_at: Option<SystemTime>,
+    sync: SyncLine,
 }
 
 impl<F, M, Q, G> Agent<F, M, Q, G> {
@@ -272,11 +303,13 @@ impl<F, M, Q, G> Agent<F, M, Q, G> {
             face_finder,
             emotion_model,
             queue,
-            _gateway: gateway,
+            gateway,
             subject_id: subject_id.into(),
             camera_ok: true,
             last_emotion: None,
             fault: None,
+            next_sync_at: None,
+            sync: SyncLine::Pendente,
         }
     }
 
@@ -288,6 +321,11 @@ impl<F, M, Q, G> Agent<F, M, Q, G> {
     #[cfg(test)]
     pub fn test_model(&self) -> &M {
         &self.emotion_model
+    }
+
+    #[cfg(test)]
+    pub fn test_gateway(&self) -> &G {
+        &self.gateway
     }
 
     pub fn set_camera_ok(&mut self, ok: bool) {
@@ -305,12 +343,11 @@ impl<F, M, Q, G> Agent<F, M, Q, G> {
 
         TraySnapshot {
             status,
-            sync: SyncLine::Pendente,
+            sync: self.sync,
             emotion_pt: self.last_emotion.map(Emotion::pt_br).map(str::to_string),
         }
     }
 
-    #[cfg(test)]
     pub fn health(&self) -> Health {
         if !self.camera_ok {
             Health::Camera
@@ -394,6 +431,63 @@ where
     fn mark_gap(&mut self) {
         self.last_emotion = None;
     }
+
+    pub fn sync_tick(&mut self, now: SystemTime) -> bool {
+        match self.next_sync_at {
+            None => {
+                self.next_sync_at = now.checked_add(SYNC_INTERVAL);
+                false
+            }
+            Some(due) if now < due => false,
+            Some(_) => {
+                self.sync_now(now);
+                true
+            }
+        }
+    }
+
+    pub fn sync_now(&mut self, now: SystemTime) {
+        let pending = match self.queue.pending() {
+            Ok(items) => items,
+            Err(_) => {
+                self.sync = SyncLine::Erro;
+                self.next_sync_at = now.checked_add(SYNC_INTERVAL);
+                return;
+            }
+        };
+
+        let ids: Vec<Uuid> = pending.iter().map(|item| item.classification_id).collect();
+        let envelope = SyncEnvelope {
+            subject_id: self.subject_id.clone(),
+            sent_at: rfc3339(now),
+            health: self.health(),
+            items: pending
+                .iter()
+                .map(|item| SyncItem {
+                    classification_id: item.classification_id,
+                    occurred_at: rfc3339(item.occurred_at),
+                    emotion: item.emotion.wire(),
+                })
+                .collect(),
+        };
+
+        match self.gateway.send(&envelope) {
+            Ok(()) => match self.queue.remove(&ids) {
+                Ok(()) => self.sync = SyncLine::Ok,
+                Err(_) => self.sync = SyncLine::Erro,
+            },
+            Err(_) => self.sync = SyncLine::Erro,
+        }
+
+        self.next_sync_at = now.checked_add(SYNC_INTERVAL);
+    }
+}
+
+fn rfc3339(at: SystemTime) -> String {
+    let dt = time::OffsetDateTime::from(at);
+    let dt = dt.replace_nanosecond(0).unwrap_or(dt);
+    dt.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 pub fn pick_face(boxes: &[FaceBox], frame_size: (u32, u32)) -> Option<FaceBox> {
@@ -421,20 +515,49 @@ fn argmax4(probs: &[f32; 4]) -> (usize, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     const SUJEITO: &str = "sujeito-teste";
     const HAPPY_ALTO: [f32; 4] = [0.05, 0.80, 0.10, 0.05];
     const ARGMAX_BAIXO: [f32; 4] = [0.31, 0.30, 0.20, 0.19];
 
     type AgenteFake = Agent<FakeFaceFinder, FakeEmotionModel, FakeQueue, StubGateway>;
+    type AgenteSync = Agent<FakeFaceFinder, FakeEmotionModel, FakeQueue, FakeGateway>;
 
     fn agente_com(
         finder: FakeFaceFinder,
         model: FakeEmotionModel,
         queue: FakeQueue,
     ) -> AgenteFake {
-        Agent::with_ports(finder, model, queue, StubGateway, SUJEITO)
+        Agent::with_ports(finder, model, queue, StubGateway::ok(), SUJEITO)
+    }
+
+    fn agente_sync(queue: FakeQueue, gateway: FakeGateway) -> AgenteSync {
+        Agent::with_ports(
+            FakeFaceFinder::empty(),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            queue,
+            gateway,
+            SUJEITO,
+        )
+    }
+
+    fn agente_sync_com(
+        finder: FakeFaceFinder,
+        model: FakeEmotionModel,
+        queue: FakeQueue,
+        gateway: FakeGateway,
+    ) -> AgenteSync {
+        Agent::with_ports(finder, model, queue, gateway, SUJEITO)
+    }
+
+    fn classificacao(id: Uuid, at: SystemTime, emotion: Emotion) -> Classification {
+        Classification {
+            classification_id: id,
+            subject_id: SUJEITO.into(),
+            occurred_at: at,
+            emotion,
+        }
     }
 
     fn frame_cinza(width: u32, height: u32) -> Frame {
@@ -670,5 +793,168 @@ mod tests {
         agent.set_camera_ok(true);
         assert_eq!(agent.snapshot().status, TrayStatus::SemRecorte);
         assert_eq!(agent.test_queue().items.len(), 0);
+    }
+
+    #[test]
+    fn primeiro_sync_so_apos_30_min() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync(FakeQueue::new(), FakeGateway::ok());
+
+        assert!(!agent.sync_tick(t0));
+        assert!(!agent.sync_tick(t0 + Duration::from_secs(29 * 60)));
+        assert_eq!(agent.test_gateway().sent().len(), 0);
+
+        assert!(agent.sync_tick(t0 + SYNC_INTERVAL));
+        assert_eq!(agent.test_gateway().sent().len(), 1);
+    }
+
+    #[test]
+    fn cadencia_de_30_min_sem_backfill() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync(FakeQueue::new(), FakeGateway::ok());
+
+        agent.sync_tick(t0);
+        assert!(agent.sync_tick(t0 + SYNC_INTERVAL));
+        assert!(agent.sync_tick(t0 + Duration::from_secs(5 * 60 * 60)));
+        assert_eq!(agent.test_gateway().sent().len(), 2);
+
+        let proximo = t0 + Duration::from_secs(5 * 60 * 60) + SYNC_INTERVAL;
+        assert!(!agent.sync_tick(proximo - Duration::from_secs(1)));
+        assert_eq!(agent.test_gateway().sent().len(), 2);
+        assert!(agent.sync_tick(proximo));
+        assert_eq!(agent.test_gateway().sent().len(), 3);
+    }
+
+    #[test]
+    fn lote_2xx_esvazia_exatamente_os_ids_enviados() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let id1 = Uuid::from_u128(1);
+        let id2 = Uuid::from_u128(2);
+        let id3 = Uuid::from_u128(3);
+        let mut queue = FakeQueue::new();
+        queue.items.push(classificacao(id1, t0, Emotion::Happy));
+        queue.items.push(classificacao(id2, t0, Emotion::Sad));
+        queue.inject_before_remove(classificacao(id3, t0, Emotion::Neutral));
+
+        let mut agent = agente_sync(queue, FakeGateway::ok());
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        assert_eq!(agent.snapshot().sync, SyncLine::Ok);
+        let sent = agent.test_gateway().sent();
+        assert_eq!(sent.len(), 1);
+        let enviados: Vec<Uuid> = sent[0].items.iter().map(|item| item.classification_id).collect();
+        assert_eq!(enviados, vec![id1, id2]);
+        let restantes: Vec<Uuid> = agent
+            .test_queue()
+            .items
+            .iter()
+            .map(|item| item.classification_id)
+            .collect();
+        assert_eq!(restantes, vec![id3]);
+    }
+
+    #[test]
+    fn falha_5xx_mantem_fila_e_reenvia_mesmos_ids() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let id = Uuid::from_u128(7);
+        let mut queue = FakeQueue::new();
+        queue.items.push(classificacao(id, t0, Emotion::Happy));
+
+        let mut agent = agente_sync(queue, FakeGateway::failing());
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        assert_eq!(agent.snapshot().sync, SyncLine::Erro);
+        assert_eq!(agent.test_queue().items.len(), 1);
+        assert_eq!(agent.test_queue().items[0].classification_id, id);
+
+        agent.test_gateway().set_fail(false);
+        agent.sync_tick(t0 + SYNC_INTERVAL + SYNC_INTERVAL);
+
+        assert_eq!(agent.snapshot().sync, SyncLine::Ok);
+        assert!(agent.test_queue().items.is_empty());
+        let sent = agent.test_gateway().sent();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].items[0].classification_id, id);
+        assert_eq!(sent[1].items[0].classification_id, id);
+    }
+
+    #[test]
+    fn fila_vazia_e_saude_ok_e_pulso() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync(FakeQueue::new(), FakeGateway::ok());
+        agent.ingest(frame_cinza(32, 32), t0);
+        assert!(agent.test_queue().items.is_empty());
+
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        let envelope = &agent.test_gateway().sent()[0];
+        assert!(envelope.items.is_empty());
+        assert_eq!(envelope.health, Health::Ok);
+        assert_eq!(agent.snapshot().sync, SyncLine::Ok);
+    }
+
+    #[test]
+    fn health_camera_tem_precedencia_sobre_model() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::fail(),
+            FakeQueue::new(),
+            FakeGateway::ok(),
+        );
+        agent.set_camera_ok(false);
+        agent.ingest(frame_cinza(32, 32), t0);
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+        assert_eq!(agent.health(), Health::Camera);
+        assert_eq!(agent.test_gateway().sent()[0].health, Health::Camera);
+
+        let mut so_modelo = agente_sync_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::fail(),
+            FakeQueue::new(),
+            FakeGateway::ok(),
+        );
+        so_modelo.ingest(frame_cinza(32, 32), t0);
+        so_modelo.sync_tick(t0);
+        so_modelo.sync_tick(t0 + SYNC_INTERVAL);
+        assert_eq!(so_modelo.health(), Health::Model);
+        assert_eq!(so_modelo.test_gateway().sent()[0].health, Health::Model);
+    }
+
+    #[test]
+    fn envelope_serializa_contrato() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let id = Uuid::from_u128(1);
+        let mut queue = FakeQueue::new();
+        queue.items.push(classificacao(id, t0, Emotion::Happy));
+        let mut agent = agente_sync(queue, FakeGateway::ok());
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        let json = serde_json::to_value(&agent.test_gateway().sent()[0]).expect("json");
+        assert_eq!(json["subject_id"], SUJEITO);
+        assert_eq!(json["sent_at"], "1970-01-01T00:30:00Z");
+        assert_eq!(json["health"], "ok");
+        assert_eq!(json["items"][0]["emotion"], "happy");
+        assert_eq!(json["items"][0]["classification_id"], id.to_string());
+        let dumped = json.to_string();
+        assert!(!dumped.contains("probs"));
+        assert!(!dumped.contains("pixels"));
+    }
+
+    #[test]
+    fn stub_gateway_failing_erra() {
+        let envelope = SyncEnvelope {
+            subject_id: SUJEITO.into(),
+            sent_at: rfc3339(SystemTime::UNIX_EPOCH),
+            health: Health::Ok,
+            items: vec![],
+        };
+        assert!(StubGateway::failing().send(&envelope).is_err());
+        assert!(StubGateway::ok().send(&envelope).is_ok());
     }
 }

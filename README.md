@@ -37,4 +37,8 @@ Os pesos ONNX ficam em `src-tauri/model/` (já no `.gitignore`; não versionar):
 - `emotion_model.onnx` — classificador de emoção (DS-CNN)
 - `version-RFB-320.onnx` — detector de face UltraFace
 
-A variável de ambiente `SENTIENCE_SUBJECT_ID` identifica o sujeito nas classificações persistidas. Sem ela, o app usa um id padrão.
+Variáveis de ambiente:
+
+- `SENTIENCE_SUBJECT_ID` — identifica o sujeito nas classificações persistidas. Sem ela, o app usa um id padrão.
+- `SENTIENCE_SYNC_URL` — destino HTTP da Sincronização (POST JSON). Vazia ou ausente usa um stub in-process que responde 2xx.
+- `SENTIENCE_SYNC_FAIL=1` — força o stub a falhar (simula 5xx), para exercitar a linha `erro` no Extra de bandeja.
