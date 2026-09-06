@@ -1,0 +1,960 @@
+mod ports;
+
+pub use ports::{EmotionModel, FaceFinder, Gateway, PortError, Queue, StubGateway};
+
+use image::{ImageFormat, RgbImage};
+use serde::Serialize;
+use std::cmp::Ordering;
+use std::fmt;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
+use uuid::Uuid;
+
+#[cfg(test)]
+pub use ports::{FakeEmotionModel, FakeFaceFinder, FakeGateway, FakeQueue};
+
+pub const CONFIDENCE_FLOOR: f32 = 0.45;
+
+pub const CROP_SIDE: u32 = 48;
+pub const CROP_PIXELS: usize = (CROP_SIDE as usize) * (CROP_SIDE as usize);
+
+pub const DEFAULT_SUBJECT_ID: &str = "local";
+
+pub const SYNC_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emotion {
+    Angry,
+    Happy,
+    Neutral,
+    Sad,
+}
+
+impl Emotion {
+    pub fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Angry),
+            1 => Some(Self::Happy),
+            2 => Some(Self::Neutral),
+            3 => Some(Self::Sad),
+            _ => None,
+        }
+    }
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Angry => "angry",
+            Self::Happy => "happy",
+            Self::Neutral => "neutral",
+            Self::Sad => "sad",
+        }
+    }
+
+    pub fn pt_br(self) -> &'static str {
+        match self {
+            Self::Angry => "Raiva",
+            Self::Happy => "Feliz",
+            Self::Neutral => "Neutro",
+            Self::Sad => "Triste",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "angry" => Some(Self::Angry),
+            "happy" => Some(Self::Happy),
+            "neutral" => Some(Self::Neutral),
+            "sad" => Some(Self::Sad),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Classification {
+    pub classification_id: Uuid,
+    pub subject_id: String,
+    pub occurred_at: SystemTime,
+    pub emotion: Emotion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    InvalidJpeg,
+    #[cfg(test)]
+    InvalidRgb,
+}
+
+#[derive(Debug, Clone)]
+pub struct Frame {
+    image: RgbImage,
+}
+
+impl Frame {
+    pub fn decode_jpeg(bytes: &[u8]) -> Result<Self, FrameError> {
+        let image = image::load_from_memory_with_format(bytes, ImageFormat::Jpeg)
+            .map_err(|_| FrameError::InvalidJpeg)?
+            .to_rgb8();
+        Ok(Self { image })
+    }
+
+    #[cfg(test)]
+    pub fn from_rgb(width: u32, height: u32, pixels: &[u8]) -> Result<Self, FrameError> {
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or(FrameError::InvalidRgb)?;
+        if width == 0 || height == 0 || pixels.len() != expected {
+            return Err(FrameError::InvalidRgb);
+        }
+        let image = RgbImage::from_raw(width, height, pixels.to_vec()).ok_or(FrameError::InvalidRgb)?;
+        Ok(Self { image })
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.image.dimensions()
+    }
+
+    pub fn as_rgb(&self) -> &RgbImage {
+        &self.image
+    }
+
+    pub fn crop_face(&self, face: &FaceBox) -> FaceCrop {
+        let (x, y, side) = self.square_region(face);
+        let cropped = if side == 0 {
+            RgbImage::from_pixel(1, 1, image::Rgb([0, 0, 0]))
+        } else {
+            image::imageops::crop_imm(&self.image, x, y, side, side).to_image()
+        };
+        let gray = image::imageops::grayscale(&cropped);
+        let resized = image::imageops::resize(
+            &gray,
+            CROP_SIDE,
+            CROP_SIDE,
+            image::imageops::FilterType::Triangle,
+        );
+        let mut pixels = [0u8; CROP_PIXELS];
+        let raw = resized.as_raw();
+        let n = raw.len().min(CROP_PIXELS);
+        pixels[..n].copy_from_slice(&raw[..n]);
+        FaceCrop { pixels }
+    }
+
+    fn square_region(&self, face: &FaceBox) -> (u32, u32, u32) {
+        let (fw, fh) = self.size();
+        if fw == 0 || fh == 0 {
+            return (0, 0, 0);
+        }
+
+        let x0 = face.x.min(fw.saturating_sub(1));
+        let y0 = face.y.min(fh.saturating_sub(1));
+        let x1 = face.x.saturating_add(face.w).min(fw).max(x0.saturating_add(1));
+        let y1 = face.y.saturating_add(face.h).min(fh).max(y0.saturating_add(1));
+        let bw = x1 - x0;
+        let bh = y1 - y0;
+
+        let side = bw.max(bh).max(1);
+        let cx = x0 + bw / 2;
+        let cy = y0 + bh / 2;
+        let half = side / 2;
+
+        let mut sx = cx.saturating_sub(half);
+        let mut sy = cy.saturating_sub(half);
+        if sx.saturating_add(side) > fw {
+            sx = fw.saturating_sub(side);
+        }
+        if sy.saturating_add(side) > fh {
+            sy = fh.saturating_sub(side);
+        }
+
+        (sx, sy, side.min(fw).min(fh))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaceBox {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl FaceBox {
+    pub fn area(self) -> u64 {
+        u64::from(self.w) * u64::from(self.h)
+    }
+
+    pub fn center_distance(self, frame_size: (u32, u32)) -> f64 {
+        let face_cx = f64::from(self.x) + f64::from(self.w) / 2.0;
+        let face_cy = f64::from(self.y) + f64::from(self.h) / 2.0;
+        let frame_cx = f64::from(frame_size.0) / 2.0;
+        let frame_cy = f64::from(frame_size.1) / 2.0;
+        let dx = face_cx - frame_cx;
+        let dy = face_cy - frame_cy;
+        dx.hypot(dy)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaceCrop {
+    pub pixels: [u8; CROP_PIXELS],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentFault {
+    Model,
+    Storage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Health {
+    Ok,
+    Camera,
+    Model,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncItem {
+    pub classification_id: Uuid,
+    pub occurred_at: String,
+    pub emotion: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncEnvelope {
+    pub subject_id: String,
+    pub sent_at: String,
+    pub health: Health,
+    pub items: Vec<SyncItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum TrayStatus {
+    Ativo,
+    #[serde(rename = "Sem recorte")]
+    SemRecorte,
+    Falha,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncLine {
+    Pendente,
+    Ok,
+    Erro,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TraySnapshot {
+    pub status: TrayStatus,
+    pub sync: SyncLine,
+    pub emotion_pt: Option<String>,
+}
+
+pub struct ModelPaths {
+    pub ultraface: PathBuf,
+    pub emotion: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct AgentInitError {
+    message: String,
+}
+
+impl AgentInitError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for AgentInitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for AgentInitError {}
+
+pub struct Agent<F, M, Q, G> {
+    face_finder: F,
+    emotion_model: M,
+    queue: Q,
+    gateway: G,
+    subject_id: String,
+    camera_ok: bool,
+    last_emotion: Option<Emotion>,
+    fault: Option<AgentFault>,
+    next_sync_at: Option<SystemTime>,
+    sync: SyncLine,
+}
+
+impl<F, M, Q, G> Agent<F, M, Q, G> {
+    pub fn with_ports(
+        face_finder: F,
+        emotion_model: M,
+        queue: Q,
+        gateway: G,
+        subject_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            face_finder,
+            emotion_model,
+            queue,
+            gateway,
+            subject_id: subject_id.into(),
+            camera_ok: true,
+            last_emotion: None,
+            fault: None,
+            next_sync_at: None,
+            sync: SyncLine::Pendente,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn test_queue(&self) -> &Q {
+        &self.queue
+    }
+
+    #[cfg(test)]
+    pub fn test_model(&self) -> &M {
+        &self.emotion_model
+    }
+
+    #[cfg(test)]
+    pub fn test_gateway(&self) -> &G {
+        &self.gateway
+    }
+
+    pub fn set_camera_ok(&mut self, ok: bool) {
+        self.camera_ok = ok;
+    }
+
+    pub fn snapshot(&self) -> TraySnapshot {
+        let status = if !self.camera_ok || self.fault.is_some() {
+            TrayStatus::Falha
+        } else if self.last_emotion.is_some() {
+            TrayStatus::Ativo
+        } else {
+            TrayStatus::SemRecorte
+        };
+
+        TraySnapshot {
+            status,
+            sync: self.sync,
+            emotion_pt: self.last_emotion.map(Emotion::pt_br).map(str::to_string),
+        }
+    }
+
+    pub fn health(&self) -> Health {
+        if !self.camera_ok {
+            Health::Camera
+        } else if self.fault.is_some() {
+            Health::Model
+        } else {
+            Health::Ok
+        }
+    }
+}
+
+impl<F, M, Q, G> Agent<F, M, Q, G>
+where
+    F: FaceFinder,
+    M: EmotionModel,
+    Q: Queue,
+    G: Gateway,
+{
+    pub fn ingest_frame(&mut self, bytes: &[u8], at: SystemTime) {
+        match Frame::decode_jpeg(bytes) {
+            Ok(frame) => self.ingest(frame, at),
+            Err(_) => self.mark_gap(),
+        }
+    }
+
+    pub fn ingest(&mut self, frame: Frame, at: SystemTime) {
+        let boxes = match self.face_finder.detect(&frame) {
+            Ok(boxes) => boxes,
+            Err(_) => {
+                self.fault = Some(AgentFault::Model);
+                self.last_emotion = None;
+                return;
+            }
+        };
+
+        let Some(face) = pick_face(&boxes, frame.size()) else {
+            self.mark_gap();
+            return;
+        };
+
+        let crop = frame.crop_face(&face);
+        let probs = match self.emotion_model.classify(&crop) {
+            Ok(probs) => probs,
+            Err(_) => {
+                self.fault = Some(AgentFault::Model);
+                self.last_emotion = None;
+                return;
+            }
+        };
+
+        let (index, confidence) = argmax4(&probs);
+        if confidence < CONFIDENCE_FLOOR {
+            self.mark_gap();
+            return;
+        }
+
+        let Some(emotion) = Emotion::from_index(index) else {
+            self.mark_gap();
+            return;
+        };
+
+        let classification = Classification {
+            classification_id: Uuid::new_v4(),
+            subject_id: self.subject_id.clone(),
+            occurred_at: at,
+            emotion,
+        };
+
+        match self.queue.push(&classification) {
+            Ok(()) => {
+                self.fault = None;
+                self.last_emotion = Some(emotion);
+            }
+            Err(_) => {
+                self.fault = Some(AgentFault::Storage);
+                self.last_emotion = None;
+            }
+        }
+    }
+
+    fn mark_gap(&mut self) {
+        self.last_emotion = None;
+    }
+
+    pub fn sync_tick(&mut self, now: SystemTime) -> bool {
+        match self.next_sync_at {
+            None => {
+                self.next_sync_at = now.checked_add(SYNC_INTERVAL);
+                false
+            }
+            Some(due) if now < due => false,
+            Some(_) => {
+                self.sync_now(now);
+                true
+            }
+        }
+    }
+
+    pub fn sync_now(&mut self, now: SystemTime) {
+        let pending = match self.queue.pending() {
+            Ok(items) => items,
+            Err(_) => {
+                self.sync = SyncLine::Erro;
+                self.next_sync_at = now.checked_add(SYNC_INTERVAL);
+                return;
+            }
+        };
+
+        let ids: Vec<Uuid> = pending.iter().map(|item| item.classification_id).collect();
+        let envelope = SyncEnvelope {
+            subject_id: self.subject_id.clone(),
+            sent_at: rfc3339(now),
+            health: self.health(),
+            items: pending
+                .iter()
+                .map(|item| SyncItem {
+                    classification_id: item.classification_id,
+                    occurred_at: rfc3339(item.occurred_at),
+                    emotion: item.emotion.wire(),
+                })
+                .collect(),
+        };
+
+        match self.gateway.send(&envelope) {
+            Ok(()) => match self.queue.remove(&ids) {
+                Ok(()) => self.sync = SyncLine::Ok,
+                Err(_) => self.sync = SyncLine::Erro,
+            },
+            Err(_) => self.sync = SyncLine::Erro,
+        }
+
+        self.next_sync_at = now.checked_add(SYNC_INTERVAL);
+    }
+}
+
+fn rfc3339(at: SystemTime) -> String {
+    let dt = time::OffsetDateTime::from(at);
+    let dt = dt.replace_nanosecond(0).unwrap_or(dt);
+    dt.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
+}
+
+pub fn pick_face(boxes: &[FaceBox], frame_size: (u32, u32)) -> Option<FaceBox> {
+    boxes.iter().copied().max_by(|a, b| match a.area().cmp(&b.area()) {
+        Ordering::Equal => b
+            .center_distance(frame_size)
+            .partial_cmp(&a.center_distance(frame_size))
+            .unwrap_or(Ordering::Equal),
+        ord => ord,
+    })
+}
+
+fn argmax4(probs: &[f32; 4]) -> (usize, f32) {
+    let mut best_i = 0;
+    let mut best = probs[0];
+    for (i, &p) in probs.iter().enumerate().skip(1) {
+        if p > best {
+            best = p;
+            best_i = i;
+        }
+    }
+    (best_i, best)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    const SUJEITO: &str = "sujeito-teste";
+    const HAPPY_ALTO: [f32; 4] = [0.05, 0.80, 0.10, 0.05];
+    const ARGMAX_BAIXO: [f32; 4] = [0.31, 0.30, 0.20, 0.19];
+
+    type AgenteFake = Agent<FakeFaceFinder, FakeEmotionModel, FakeQueue, StubGateway>;
+    type AgenteSync = Agent<FakeFaceFinder, FakeEmotionModel, FakeQueue, FakeGateway>;
+
+    fn agente_com(
+        finder: FakeFaceFinder,
+        model: FakeEmotionModel,
+        queue: FakeQueue,
+    ) -> AgenteFake {
+        Agent::with_ports(finder, model, queue, StubGateway::ok(), SUJEITO)
+    }
+
+    fn agente_sync(queue: FakeQueue, gateway: FakeGateway) -> AgenteSync {
+        Agent::with_ports(
+            FakeFaceFinder::empty(),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            queue,
+            gateway,
+            SUJEITO,
+        )
+    }
+
+    fn agente_sync_com(
+        finder: FakeFaceFinder,
+        model: FakeEmotionModel,
+        queue: FakeQueue,
+        gateway: FakeGateway,
+    ) -> AgenteSync {
+        Agent::with_ports(finder, model, queue, gateway, SUJEITO)
+    }
+
+    fn classificacao(id: Uuid, at: SystemTime, emotion: Emotion) -> Classification {
+        Classification {
+            classification_id: id,
+            subject_id: SUJEITO.into(),
+            occurred_at: at,
+            emotion,
+        }
+    }
+
+    fn frame_cinza(width: u32, height: u32) -> Frame {
+        let pixels = vec![80u8; (width * height * 3) as usize];
+        Frame::from_rgb(width, height, &pixels).expect("frame cinza")
+    }
+
+    fn frame_metades(width: u32, height: u32) -> Frame {
+        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                if x >= width / 2 {
+                    let i = ((y * width + x) * 3) as usize;
+                    pixels[i] = 255;
+                    pixels[i + 1] = 255;
+                    pixels[i + 2] = 255;
+                }
+            }
+        }
+        Frame::from_rgb(width, height, &pixels).expect("frame metades")
+    }
+
+    fn face(x: u32, y: u32, w: u32, h: u32) -> FaceBox {
+        FaceBox { x, y, w, h }
+    }
+
+    fn media_crop(crop: &FaceCrop) -> u32 {
+        crop.pixels.iter().map(|&p| u32::from(p)).sum::<u32>() / CROP_PIXELS as u32
+    }
+
+    #[test]
+    fn ingest_bytes_invalidos_sao_gap() {
+        let mut agent = agente_com(
+            FakeFaceFinder::empty(),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::new(),
+        );
+
+        agent.ingest_frame(&[0xFF; 32], SystemTime::UNIX_EPOCH);
+
+        let snap = agent.snapshot();
+        assert_eq!(snap.status, TrayStatus::SemRecorte);
+        assert!(snap.emotion_pt.is_none());
+        assert_eq!(snap.sync, SyncLine::Pendente);
+        assert_eq!(agent.test_queue().items.len(), 0);
+        assert_eq!(agent.health(), Health::Ok);
+    }
+
+    #[test]
+    fn sem_face_nao_classifica() {
+        let mut agent = agente_com(
+            FakeFaceFinder::empty(),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::new(),
+        );
+
+        agent.ingest(frame_cinza(32, 32), SystemTime::UNIX_EPOCH);
+
+        let snap = agent.snapshot();
+        assert_eq!(snap.status, TrayStatus::SemRecorte);
+        assert!(snap.emotion_pt.is_none());
+        assert_eq!(agent.test_queue().items.len(), 0);
+        assert!(agent.test_model().received_crops().is_empty());
+        assert_eq!(agent.health(), Health::Ok);
+    }
+
+    #[test]
+    fn argmax_abaixo_do_piso_e_gap() {
+        let mut agent = agente_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::probs(ARGMAX_BAIXO),
+            FakeQueue::new(),
+        );
+
+        agent.ingest(frame_cinza(32, 32), SystemTime::UNIX_EPOCH);
+
+        let snap = agent.snapshot();
+        assert_eq!(snap.status, TrayStatus::SemRecorte);
+        assert!(snap.emotion_pt.is_none());
+        assert_eq!(agent.test_queue().items.len(), 0);
+        assert_eq!(agent.health(), Health::Ok);
+    }
+
+    #[test]
+    fn happy_acima_do_piso_persiste_uma_classificacao() {
+        let mut agent = agente_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::new(),
+        );
+        let at = SystemTime::UNIX_EPOCH;
+
+        agent.ingest(frame_cinza(32, 32), at);
+
+        let snap = agent.snapshot();
+        assert_eq!(snap.status, TrayStatus::Ativo);
+        assert_eq!(snap.emotion_pt.as_deref(), Some("Feliz"));
+        assert_eq!(agent.test_queue().items.len(), 1);
+
+        let item = &agent.test_queue().items[0];
+        assert_eq!(item.subject_id, SUJEITO);
+        assert_eq!(item.occurred_at, at);
+        assert_eq!(item.emotion, Emotion::Happy);
+        assert_eq!(agent.health(), Health::Ok);
+    }
+
+    #[test]
+    fn duas_faces_usa_a_maior_e_uma_classificacao() {
+        let mut agent = agente_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 8, 8), face(32, 0, 32, 32)]),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::new(),
+        );
+
+        agent.ingest(frame_metades(64, 32), SystemTime::UNIX_EPOCH);
+
+        assert_eq!(agent.test_queue().items.len(), 1);
+        assert_eq!(agent.test_model().received_crops().len(), 1);
+        let mean = media_crop(&agent.test_model().last_crop().expect("crop"));
+        assert!(mean > 200, "recorte deveria vir da metade clara, mean={mean}");
+        assert_eq!(agent.snapshot().status, TrayStatus::Ativo);
+    }
+
+    #[test]
+    fn empate_de_area_escolhe_a_mais_central() {
+        let frame = (100, 100);
+        let esquerda = face(0, 40, 20, 20);
+        let centro = face(40, 40, 20, 20);
+        assert_eq!(esquerda.area(), centro.area());
+        assert_eq!(pick_face(&[esquerda, centro], frame), Some(centro));
+        assert_eq!(pick_face(&[centro, esquerda], frame), Some(centro));
+    }
+
+    #[test]
+    fn pick_face_vazio_e_maior_area() {
+        assert!(pick_face(&[], (32, 32)).is_none());
+        let pequena = face(0, 0, 4, 4);
+        let grande = face(10, 10, 20, 20);
+        assert_eq!(pick_face(&[pequena, grande], (40, 40)), Some(grande));
+    }
+
+    #[test]
+    fn crop_face_produz_48x48() {
+        let frame = frame_cinza(20, 20);
+        let crop = frame.crop_face(&face(2, 2, 8, 8));
+        assert_eq!(crop.pixels.len(), CROP_PIXELS);
+    }
+
+    #[test]
+    fn falha_do_modelo_e_proximo_tick_ok_limpa() {
+        let mut agent = agente_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::fail(),
+            FakeQueue::new(),
+        );
+        let frame = frame_cinza(32, 32);
+
+        agent.ingest(frame.clone(), SystemTime::UNIX_EPOCH);
+        assert_eq!(agent.snapshot().status, TrayStatus::Falha);
+        assert_eq!(agent.health(), Health::Model);
+        assert_eq!(agent.test_queue().items.len(), 0);
+        assert!(agent.snapshot().emotion_pt.is_none());
+
+        agent.test_model().set_probs(HAPPY_ALTO);
+        agent.ingest(frame, SystemTime::UNIX_EPOCH);
+        assert_eq!(agent.snapshot().status, TrayStatus::Ativo);
+        assert_eq!(agent.health(), Health::Ok);
+        assert_eq!(agent.snapshot().emotion_pt.as_deref(), Some("Feliz"));
+        assert_eq!(agent.test_queue().items.len(), 1);
+    }
+
+    #[test]
+    fn falha_da_fila_nao_anuncia_ativo() {
+        let mut agent = agente_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::fail_on_push(),
+        );
+
+        agent.ingest(frame_cinza(32, 32), SystemTime::UNIX_EPOCH);
+
+        let snap = agent.snapshot();
+        assert_eq!(snap.status, TrayStatus::Falha);
+        assert!(snap.emotion_pt.is_none());
+        assert_eq!(agent.test_queue().items.len(), 0);
+        assert_eq!(agent.health(), Health::Model);
+    }
+
+    #[test]
+    fn classification_nao_carrega_frame() {
+        let item = Classification {
+            classification_id: Uuid::new_v4(),
+            subject_id: SUJEITO.into(),
+            occurred_at: SystemTime::UNIX_EPOCH,
+            emotion: Emotion::Happy,
+        };
+        let dbg = format!("{item:?}");
+        assert!(dbg.contains("classification_id"));
+        assert!(dbg.contains("subject_id"));
+        assert!(dbg.contains("occurred_at"));
+        assert!(dbg.contains("emotion"));
+        assert!(!dbg.contains("Frame"));
+        assert!(!dbg.contains("pixels"));
+        assert!(std::mem::size_of::<Classification>() < 128);
+    }
+
+    #[test]
+    fn camera_off_snapshot_falha() {
+        let mut agent = agente_com(
+            FakeFaceFinder::empty(),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::new(),
+        );
+        agent.set_camera_ok(false);
+
+        let snap = agent.snapshot();
+        assert_eq!(snap.status, TrayStatus::Falha);
+        assert_eq!(agent.health(), Health::Camera);
+        assert!(snap.emotion_pt.is_none());
+    }
+
+    #[test]
+    fn camera_ok_apos_gap_volta_sem_recorte() {
+        let mut agent = agente_com(
+            FakeFaceFinder::empty(),
+            FakeEmotionModel::probs(HAPPY_ALTO),
+            FakeQueue::new(),
+        );
+        agent.set_camera_ok(false);
+        agent.ingest_frame(&[1, 2, 3], SystemTime::UNIX_EPOCH);
+        assert_eq!(agent.snapshot().status, TrayStatus::Falha);
+
+        agent.set_camera_ok(true);
+        assert_eq!(agent.snapshot().status, TrayStatus::SemRecorte);
+        assert_eq!(agent.test_queue().items.len(), 0);
+    }
+
+    #[test]
+    fn primeiro_sync_so_apos_30_min() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync(FakeQueue::new(), FakeGateway::ok());
+
+        assert!(!agent.sync_tick(t0));
+        assert!(!agent.sync_tick(t0 + Duration::from_secs(29 * 60)));
+        assert_eq!(agent.test_gateway().sent().len(), 0);
+
+        assert!(agent.sync_tick(t0 + SYNC_INTERVAL));
+        assert_eq!(agent.test_gateway().sent().len(), 1);
+    }
+
+    #[test]
+    fn cadencia_de_30_min_sem_backfill() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync(FakeQueue::new(), FakeGateway::ok());
+
+        agent.sync_tick(t0);
+        assert!(agent.sync_tick(t0 + SYNC_INTERVAL));
+        assert!(agent.sync_tick(t0 + Duration::from_secs(5 * 60 * 60)));
+        assert_eq!(agent.test_gateway().sent().len(), 2);
+
+        let proximo = t0 + Duration::from_secs(5 * 60 * 60) + SYNC_INTERVAL;
+        assert!(!agent.sync_tick(proximo - Duration::from_secs(1)));
+        assert_eq!(agent.test_gateway().sent().len(), 2);
+        assert!(agent.sync_tick(proximo));
+        assert_eq!(agent.test_gateway().sent().len(), 3);
+    }
+
+    #[test]
+    fn lote_2xx_esvazia_exatamente_os_ids_enviados() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let id1 = Uuid::from_u128(1);
+        let id2 = Uuid::from_u128(2);
+        let id3 = Uuid::from_u128(3);
+        let mut queue = FakeQueue::new();
+        queue.items.push(classificacao(id1, t0, Emotion::Happy));
+        queue.items.push(classificacao(id2, t0, Emotion::Sad));
+        queue.inject_before_remove(classificacao(id3, t0, Emotion::Neutral));
+
+        let mut agent = agente_sync(queue, FakeGateway::ok());
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        assert_eq!(agent.snapshot().sync, SyncLine::Ok);
+        let sent = agent.test_gateway().sent();
+        assert_eq!(sent.len(), 1);
+        let enviados: Vec<Uuid> = sent[0].items.iter().map(|item| item.classification_id).collect();
+        assert_eq!(enviados, vec![id1, id2]);
+        let restantes: Vec<Uuid> = agent
+            .test_queue()
+            .items
+            .iter()
+            .map(|item| item.classification_id)
+            .collect();
+        assert_eq!(restantes, vec![id3]);
+    }
+
+    #[test]
+    fn falha_5xx_mantem_fila_e_reenvia_mesmos_ids() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let id = Uuid::from_u128(7);
+        let mut queue = FakeQueue::new();
+        queue.items.push(classificacao(id, t0, Emotion::Happy));
+
+        let mut agent = agente_sync(queue, FakeGateway::failing());
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        assert_eq!(agent.snapshot().sync, SyncLine::Erro);
+        assert_eq!(agent.test_queue().items.len(), 1);
+        assert_eq!(agent.test_queue().items[0].classification_id, id);
+
+        agent.test_gateway().set_fail(false);
+        agent.sync_tick(t0 + SYNC_INTERVAL + SYNC_INTERVAL);
+
+        assert_eq!(agent.snapshot().sync, SyncLine::Ok);
+        assert!(agent.test_queue().items.is_empty());
+        let sent = agent.test_gateway().sent();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].items[0].classification_id, id);
+        assert_eq!(sent[1].items[0].classification_id, id);
+    }
+
+    #[test]
+    fn fila_vazia_e_saude_ok_e_pulso() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync(FakeQueue::new(), FakeGateway::ok());
+        agent.ingest(frame_cinza(32, 32), t0);
+        assert!(agent.test_queue().items.is_empty());
+
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        let envelope = &agent.test_gateway().sent()[0];
+        assert!(envelope.items.is_empty());
+        assert_eq!(envelope.health, Health::Ok);
+        assert_eq!(agent.snapshot().sync, SyncLine::Ok);
+    }
+
+    #[test]
+    fn health_camera_tem_precedencia_sobre_model() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let mut agent = agente_sync_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::fail(),
+            FakeQueue::new(),
+            FakeGateway::ok(),
+        );
+        agent.set_camera_ok(false);
+        agent.ingest(frame_cinza(32, 32), t0);
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+        assert_eq!(agent.health(), Health::Camera);
+        assert_eq!(agent.test_gateway().sent()[0].health, Health::Camera);
+
+        let mut so_modelo = agente_sync_com(
+            FakeFaceFinder::boxes(vec![face(0, 0, 16, 16)]),
+            FakeEmotionModel::fail(),
+            FakeQueue::new(),
+            FakeGateway::ok(),
+        );
+        so_modelo.ingest(frame_cinza(32, 32), t0);
+        so_modelo.sync_tick(t0);
+        so_modelo.sync_tick(t0 + SYNC_INTERVAL);
+        assert_eq!(so_modelo.health(), Health::Model);
+        assert_eq!(so_modelo.test_gateway().sent()[0].health, Health::Model);
+    }
+
+    #[test]
+    fn envelope_serializa_contrato() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let id = Uuid::from_u128(1);
+        let mut queue = FakeQueue::new();
+        queue.items.push(classificacao(id, t0, Emotion::Happy));
+        let mut agent = agente_sync(queue, FakeGateway::ok());
+        agent.sync_tick(t0);
+        agent.sync_tick(t0 + SYNC_INTERVAL);
+
+        let json = serde_json::to_value(&agent.test_gateway().sent()[0]).expect("json");
+        assert_eq!(json["subject_id"], SUJEITO);
+        assert_eq!(json["sent_at"], "1970-01-01T00:30:00Z");
+        assert_eq!(json["health"], "ok");
+        assert_eq!(json["items"][0]["emotion"], "happy");
+        assert_eq!(json["items"][0]["classification_id"], id.to_string());
+        let dumped = json.to_string();
+        assert!(!dumped.contains("probs"));
+        assert!(!dumped.contains("pixels"));
+    }
+
+    #[test]
+    fn stub_gateway_failing_erra() {
+        let envelope = SyncEnvelope {
+            subject_id: SUJEITO.into(),
+            sent_at: rfc3339(SystemTime::UNIX_EPOCH),
+            health: Health::Ok,
+            items: vec![],
+        };
+        assert!(StubGateway::failing().send(&envelope).is_err());
+        assert!(StubGateway::ok().send(&envelope).is_ok());
+    }
+}

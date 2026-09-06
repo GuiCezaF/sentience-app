@@ -1,35 +1,25 @@
-import { useState } from "react";
-import appLogo from "../assets/logo.svg";
+import type { TrayStatus } from "../types/agent";
+import StatusPill from "./StatusPill";
 
-function getUserName(): string {
-  // TODO: get real user's name
-  return "Guilherme";
-}
-function getStatus(): string {
-  // TODO: get real app status
-  // Server status or emotion process status ?
-  return "Inativo";
-}
+const STATUS_HINT: Record<TrayStatus, string> = {
+  Ativo: "Classificando expressões",
+  "Sem recorte": "Nenhum rosto no recorte",
+  Falha: "Câmera ou modelo indisponível",
+};
 
-export default function Navbar() {
-  const [userName, setUserStatus] = useState(getUserName());
-  const [appStatus, setAppStatus] = useState(getStatus());
+type NavbarProps = {
+  subjectName: string;
+  status: TrayStatus;
+};
 
-  const statusColors: Record<string, string> = {
-    Ativo: "text-app-success",
-    Inativo: "text-app-err",
-    Maintenance: "text-app-warn",
-  };
-
+export default function Navbar({ subjectName, status }: NavbarProps) {
   return (
-    <nav className="flex items-center justify-between w-full text-sm">
-      <div className="flex items-center gap-1.5">
-        <img src={appLogo} className="w-18 h-9" alt="sentience logo" />
-        <h1 className="text-sm font-bold">{userName}</h1>
+    <header className="header">
+      <div className="min-w-0">
+        <h1 className="header-title">{subjectName}</h1>
+        <p className="header-subtitle">{STATUS_HINT[status]}</p>
       </div>
-      <div className={statusColors[appStatus] || "text-gray-500"}>
-        {appStatus}
-      </div>
-    </nav>
+      <StatusPill status={status} />
+    </header>
   );
 }

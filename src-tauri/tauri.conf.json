@@ -13,15 +13,17 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "sentience-app",
+        "title": "Sentience",
         "label": "main",
         "visible": false,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "resizable": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "width": 320,
-        "height": 340,
+        "width": 344,
+        "height": 452,
         "center": false
       }
     ],
@@ -38,6 +40,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "model/*.onnx"
     ]
   }
 }

@@ -1,15 +1,34 @@
 import "./App.css";
 import CameraFeed from "./components/CameraFeed";
+import EmotionDebug from "./components/EmotionDebug";
 import Footer from "./components/Footer";
 import Navbar from "./components/Navbar";
+import SyncRow from "./components/SyncRow";
+import { useAgentSnapshot } from "./hooks/useAgentSnapshot";
+import { useCameraSession } from "./hooks/useCameraSession";
+
+const SUBJECT_PLACEHOLDER = "Guilherme";
 
 export default function App() {
-  return (
-    <div className="min-h-screen flex flex-col p-4 gap-3">
-      <Navbar />
+  const { snapshot, refresh } = useAgentSnapshot();
+  const { stream, cameraState, cameraFailure, cardVisible } = useCameraSession({
+    onTick: refresh,
+  });
 
-      <main className="flex-1 flex flex-col items-center justify-center gap-2">
-        <CameraFeed />
+  return (
+    <div className="app-shell" data-visible={cardVisible}>
+      <Navbar subjectName={SUBJECT_PLACEHOLDER} status={snapshot.status} />
+
+      <main className="app-main">
+        <CameraFeed
+          stream={stream}
+          state={cameraState}
+          failure={cameraFailure}
+          visible={cardVisible}
+        >
+          <EmotionDebug emotionPt={snapshot.emotion_pt} />
+        </CameraFeed>
+        <SyncRow sync={snapshot.sync} />
       </main>
 
       <Footer />

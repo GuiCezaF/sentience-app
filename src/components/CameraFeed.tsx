@@ -1,55 +1,87 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import noCamIcon from "../assets/no-cam.svg";
+import type { CameraFailure, CameraState } from "../hooks/useCameraSession";
 
-export default function CameraFeed() {
+type CameraFeedProps = {
+  stream: MediaStream | null;
+  state: CameraState;
+  failure: CameraFailure | null;
+  visible: boolean;
+  children?: ReactNode;
+};
+
+function failureHint(failure: CameraFailure | null): string {
+  switch (failure?.kind) {
+    case "denied":
+      return "Permissão de câmera negada para o Sentience.";
+    case "missing":
+      return "Nenhuma câmera encontrada neste computador.";
+    case "busy":
+      return "A câmera está em uso por outro aplicativo.";
+    case "unknown":
+      return `Erro ao abrir a câmera (${failure.name}).`;
+    default:
+      return "A Captura retoma assim que a câmera voltar.";
+  }
+}
+
+export default function CameraFeed({
+  stream,
+  state,
+  failure,
+  visible,
+  children,
+}: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [hasCamera, setHasCamera] = useState(true);
-  const [emotion] = useState("Neutro");
+  const [ready, setReady] = useState(false);
+  const showVideo = state === "ok" && visible;
 
   useEffect(() => {
-    let stream: MediaStream | null = null;
-
-    navigator.mediaDevices
-      ?.getUserMedia({ video: true, audio: false })
-      .then((mediaStream) => {
-        stream = mediaStream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
-        }
-        setHasCamera(true);
-      })
-      .catch(() => {
-        setHasCamera(false);
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    if (showVideo && stream) {
+      video.srcObject = stream;
+      void video.play().catch(() => {
       });
-
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, []);
+      return;
+    }
+    video.srcObject = null;
+    setReady(false);
+  }, [stream, showVideo]);
 
   return (
-    <>
-      <div className="w-[140px] h-[140px] rounded-full overflow-hidden flex items-center justify-center ring-2 ring-app-text/10 bg-black/5">
-        {hasCamera ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover scale-x-[-1]"
-          />
-        ) : (
-          <img src={noCamIcon} alt="Câmera indisponível" className="w-12 h-12 opacity-60" />
-        )}
-      </div>
+    <section className="camera" data-state={state} aria-label="Câmera">
+      {showVideo ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="camera-video"
+          data-ready={ready}
+          onPlaying={() => setReady(true)}
+        />
+      ) : null}
 
-      {hasCamera ? (
-        <span className="text-sm font-semibold text-app-text">{emotion}</span>
-      ) : (
-        <span className="text-xs font-semibold text-app-err">Câmera indisponível</span>
-      )}
-    </>
+      {state === "requesting" || (showVideo && !ready) ? (
+        <div className="camera-empty" role="status">
+          <span className="camera-connecting-dot" aria-hidden="true" />
+          <p className="camera-empty-title">Conectando à câmera…</p>
+        </div>
+      ) : null}
+
+      {state === "unavailable" ? (
+        <div className="camera-empty" role="status">
+          <img src={noCamIcon} alt="" className="camera-empty-icon" />
+          <p className="camera-empty-title">Câmera indisponível</p>
+          <p className="camera-empty-hint">{failureHint(failure)}</p>
+          <p className="camera-empty-hint">Tentando novamente a cada 5 s.</p>
+        </div>
+      ) : null}
+
+      {children}
+    </section>
   );
 }

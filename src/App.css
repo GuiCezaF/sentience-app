@@ -1,15 +1,430 @@
 @import "tailwindcss";
 
 @theme {
-  --color-app-bg: #b9bec4;
-  --color-app-text: #0a1928;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI",
+    system-ui, sans-serif;
 
-  --color-app-success: #179864;
-  --color-app-err: #981717;
-  --color-app-warn: #987a17;
+  --color-label: #1c1c1e;
+  --color-label-secondary: rgb(60 60 67 / 0.6);
+  --color-label-tertiary: rgb(60 60 67 / 0.3);
+  --color-separator: rgb(60 60 67 / 0.16);
+  --color-fill: rgb(120 120 128 / 0.12);
+  --color-fill-strong: rgb(120 120 128 / 0.22);
+  --color-surface: #ffffff;
+  --color-grouped: #f2f2f7;
+
+  --color-green: #34c759;
+  --color-red: #ff3b30;
+  --color-orange: #ff9f0a;
+  --color-blue: #007aff;
+
+  --radius-shell: 16px;
+  --radius-module: 12px;
+  --radius-group: 10px;
+
+  --ease-spring: linear(0, 0.156, 0.408, 0.62, 0.769, 0.864, 0.922, 0.956, 0.976, 0.987, 1);
+}
+
+:root {
+  --shell-width: 320px;
+  --shell-height: 416px;
+  --shell-inset-x: 12px;
+  --shell-inset-top: 10px;
+  --shell-inset-bottom: 26px;
+
+  color-scheme: light;
+  font-family: var(--font-sans);
+  font-size: 100%;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
 }
 
 body {
-  background-color: var(--color-app-bg);
-  color: var(--color-app-text);
+  color: var(--color-label);
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+#root {
+  box-sizing: border-box;
+  padding: var(--shell-inset-top) var(--shell-inset-x) var(--shell-inset-bottom);
+}
+
+
+.app-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 16px 14px 14px;
+  overflow: hidden;
+  border-radius: var(--radius-shell);
+  background: rgb(242 242 247 / 0.94);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  /* Fio de contorno + reflexo no topo (o material "pega luz") + sombra de elevação. */
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.14),
+    inset 0 0.5px 0 rgb(255 255 255 / 0.85),
+    0 1px 2px rgb(0 0 0 / 0.06),
+    0 8px 24px -6px rgb(0 0 0 / 0.28);
+  transform-origin: 100% 100%;
+}
+
+.app-shell[data-visible="false"] {
+  opacity: 0;
+}
+
+.app-shell[data-visible="true"] {
+  animation: shell-in 360ms var(--ease-spring) both;
+}
+
+@keyframes shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.app-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+
+.header-title {
+  margin: 0;
+  overflow: hidden;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.022em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.header-subtitle {
+  margin: 2px 0 0;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  letter-spacing: -0.004em;
+  color: var(--color-label-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 590;
+  line-height: 1.25;
+  letter-spacing: 0.005em;
+  color: var(--color-label-secondary);
+  background: color-mix(in srgb, currentColor 11%, transparent);
+  transition: color 240ms ease, background-color 240ms ease;
+}
+
+.status-pill[data-status="Ativo"] {
+  color: color-mix(in srgb, var(--color-green) 82%, black);
+}
+
+.status-pill[data-status="Falha"] {
+  color: var(--color-red);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.status-pill[data-status="Ativo"] .status-dot {
+  background: var(--color-green);
+  box-shadow: 0 0 0 3px rgb(52 199 89 / 0.22);
+}
+
+.camera {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--radius-module);
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgb(60 60 67 / 0.55), transparent 70%),
+    #16161a;
+  /* Fio interno claro dá espessura ao módulo, como um vidro sobre o cartão. */
+  box-shadow:
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.14),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+.camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+}
+
+.camera-video[data-ready="true"] {
+  opacity: 1;
+}
+
+.camera-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0 20px;
+  text-align: center;
+  color: rgb(255 255 255 / 0.92);
+}
+
+.camera-empty-icon {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 4px;
+  opacity: 0.85;
+}
+
+.camera-empty-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: -0.004em;
+}
+
+.camera-empty-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: rgb(255 255 255 / 0.55);
+}
+
+.camera-connecting-dot {
+  width: 8px;
+  height: 8px;
+  margin-bottom: 6px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.7);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chip {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 590;
+  letter-spacing: 0.01em;
+  color: #fff;
+  background: rgb(28 28 30 / 0.55);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.18);
+}
+
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.group {
+  overflow: hidden;
+  border-radius: var(--radius-group);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.06);
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 0.9375rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-label);
+}
+
+.row + .row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 14px;
+  height: 0.5px;
+  background: var(--color-separator);
+}
+
+.row-value {
+  flex-shrink: 0;
+  font-weight: 400;
+  color: var(--color-label-secondary);
+  transition: color 240ms ease;
+}
+
+.row-value[data-tone="ok"] {
+  color: color-mix(in srgb, var(--color-green) 82%, black);
+}
+
+.row-value[data-tone="erro"] {
+  color: var(--color-red);
+}
+
+.row-button {
+  border: 0;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: default;
+  transition: background-color 200ms ease-out;
+}
+
+.row-button:hover {
+  background: var(--color-fill);
+  transition-duration: 60ms;
+}
+
+.row-button:active {
+  background: var(--color-fill-strong);
+  transition-duration: 0ms;
+}
+
+.row-button:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: -2px;
+}
+
+.row-button[data-tone="destructive"] {
+  color: var(--color-red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-visible="true"] {
+    animation: shell-fade 200ms ease both;
+  }
+
+  .camera-connecting-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+
+  .camera-video {
+    transition-duration: 120ms;
+  }
+}
+
+@keyframes shell-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell {
+    background: var(--color-grouped);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .chip {
+    background: rgb(28 28 30 / 0.92);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .app-shell {
+    box-shadow:
+      0 0 0 1px rgb(0 0 0 / 0.5),
+      0 8px 24px -6px rgb(0 0 0 / 0.28);
+  }
+
+  .group {
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+  }
+}
+
+@media (min-width: 400px) {
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #d1d1d6;
+  }
+
+  #root {
+    width: calc(var(--shell-width) + 2 * var(--shell-inset-x));
+    height: calc(var(--shell-height) + var(--shell-inset-top) + var(--shell-inset-bottom));
+  }
 }
